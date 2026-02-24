@@ -1,0 +1,14 @@
+torch
+torchvision
+torchaudio
+opencv-python
+numpy
+pandas
+streamlit
+matplotlib
+scikit-learn
+Pillow
+tqdm
+editdistance
+deskew
+
