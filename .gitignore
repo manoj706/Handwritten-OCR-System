@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+env/
+venv/
+*.h5
+*.pt
+*.pth
+*.ckpt
+datasets/
+data/
