@@ -175,6 +175,7 @@ if uploaded_file is not None:
                     
                     print(f"DEBUG: Loading TrOCR Processor and Model ({model_id})...")
                     # Load in FP16 to save memory on 6GB GPUs
+                    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
                     try:
                         # Update: Using use_fast=False for better compatibility in cloudy environments
                         processor = TrOCRProcessor.from_pretrained(trocr_model_id, use_fast=False)
