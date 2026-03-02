@@ -14,4 +14,5 @@ easyocr
 google-generativeai
 altair<5
 psutil
-
+deskew
+editdistance
