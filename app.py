@@ -183,7 +183,7 @@ if uploaded_file is not None:
                     st.error(f"Gemini Reference Error: {str(e)}")
 
         # --- 1. Gemini Vision Path (Main) ---
-        if model_choice == "Gemini Vision API (Best)":
+        if model_choice == "Gemini Vision API (Cloud)":
             if not gemini_api_key:
                 st.error("Please enter your Gemini API Key in the sidebar.")
             else:
