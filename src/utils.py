@@ -53,10 +53,18 @@ class LabelEncoder:
 
 def compute_cer(predicted: str, target: str) -> float:
     import editdistance
-    return editdistance.eval(predicted, target) / max(len(target), 1)
+    # Normalization: lowercase and strip leading/trailing whitespace
+    pred = predicted.lower().strip()
+    tgt = target.lower().strip()
+    if not tgt:
+        return 0.0 if not pred else 1.0
+    return editdistance.eval(pred, tgt) / len(tgt)
 
 def compute_wer(predicted: str, target: str) -> float:
     import editdistance
-    pred_words = predicted.split()
-    target_words = target.split()
-    return editdistance.eval(pred_words, target_words) / max(len(target_words), 1)
+    # Normalization: lowercase and strip leading/trailing whitespace
+    pred_words = predicted.lower().strip().split()
+    target_words = target.lower().strip().split()
+    if not target_words:
+        return 0.0 if not pred_words else 1.0
+    return editdistance.eval(pred_words, target_words) / len(target_words)

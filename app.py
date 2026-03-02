@@ -24,6 +24,32 @@ try:
 except ImportError:
     pass
 
+# Load labels for automatic evaluation
+LABELS_PATH = os.path.join("data", "dummy", "labels.txt")
+USER_LABELS_PATH = "user_labels.json"
+ground_truth_lookup = {}
+
+# Load built-in labels
+if os.path.exists(LABELS_PATH):
+    try:
+        with open(LABELS_PATH, "r") as f:
+            for line in f:
+                parts = line.strip().split(" ", 1)
+                if len(parts) == 2:
+                    ground_truth_lookup[parts[0]] = parts[1]
+    except Exception as e:
+        print(f"Error loading labels: {e}")
+
+# Load user-saved labels
+import json
+if os.path.exists(USER_LABELS_PATH):
+    try:
+        with open(USER_LABELS_PATH, "r") as f:
+            user_data = json.load(f)
+            ground_truth_lookup.update(user_data)
+    except Exception as e:
+        print(f"Error loading user labels: {e}")
+
 # Page Config
 st.set_page_config(page_title="Handwritten OCR System", layout="wide")
 
@@ -34,9 +60,21 @@ st.markdown("---")
 st.sidebar.header("OCR Engine Selection")
 model_choice = st.sidebar.radio(
     "Choose Model:",
-    ["Gemini Vision API (Best)", "TrOCR (High-Accuracy Local)", "EasyOCR (Lightweight)"],
+    ["TrOCR (High-Accuracy Local)", "EasyOCR (Lightweight)", "Gemini Vision API (Cloud)"],
     index=0
 )
+
+# Reference / Consensus Mode
+st.sidebar.markdown("---")
+st.sidebar.subheader("Accurary & Consistency")
+use_consensus = st.sidebar.checkbox("Consensus Mode (Multi-Model)", value=False, help="Runs both TrOCR and EasyOCR to calculate a Consistency Score.")
+use_gemini_ref = False
+
+# Only show Gemini Ref if Gemini isn't the primary and if key is provided
+if model_choice != "Gemini Vision API (Cloud)":
+    use_gemini_ref = st.sidebar.checkbox("Use Gemini as Reference", value=False, help="Uses Gemini to generate 'pseudo-ground truth' for accuracy metrics.")
+    if use_gemini_ref:
+        st.sidebar.warning("🤖 Gemini Reference active. Ensure API key is entered below.")
 
 # Model specific settings
 gemini_api_key = ""
@@ -44,27 +82,23 @@ trocr_size = "Base"
 trocr_segmentation = True
 trocr_model_id = "microsoft/trocr-base-handwritten"
 
-if model_choice == "Gemini Vision API (Best)":
+if model_choice == "Gemini Vision API (Cloud)" or use_gemini_ref:
     st.sidebar.markdown("### Gemini Settings")
-    gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Get a free key at aistudio.google.com/app/apikey")
-    st.sidebar.info("Gemini offers 'ChatGPT-level' accuracy by using Google's latest Vision-Language models.")
+    gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Required for Gemini main or reference mode.")
+    st.sidebar.info("💡 Note: If you hit quota limits (429), use 'Consensus Mode' for local evaluation instead.")
 
-if model_choice == "TrOCR (High-Accuracy Local)":
+if "TrOCR" in model_choice or use_consensus:
     st.sidebar.markdown("### TrOCR Settings")
-    
     import psutil
     available_ram_gb = psutil.virtual_memory().available / (1024**3)
-    
     if available_ram_gb < 3.0:
-        st.sidebar.warning(f"⚠️ **Low RAM ({available_ram_gb:.1f}GB)**: 'Large' model is disabled to prevent crashes. Using 'Base'.")
+        st.sidebar.warning(f"⚠️ **Low RAM ({available_ram_gb:.1f}GB)**: Using 'Base' model size.")
         trocr_size = "Base"
     else:
-        st.sidebar.warning("⚠️ **High Memory Usage**: Local TrOCR requires ~2GB+ free RAM. If the app crashes, use Gemini (Recommended).")
         trocr_size = st.sidebar.selectbox("Model Size", ["Base", "Large"], index=0)
     
     st.sidebar.info("TrOCR is a local transformer specifically trained for handwriting.")
     trocr_segmentation = st.sidebar.checkbox("Line-by-Line Processing", value=True, help="Recommended for multi-line notes.")
-    # Calculate ID here to avoid NameError in other blocks
     trocr_model_id = "microsoft/trocr-large-handwritten" if trocr_size == "Large" else "microsoft/trocr-base-handwritten"
 
 # Preprocessing Settings
@@ -101,16 +135,54 @@ if uploaded_file is not None:
         st.image(processed_gray, use_container_width=True)
         
     st.markdown("---")
-    ground_truth = st.text_area("Ground Truth Text (Optional for Accuracy Evaluation)", "", help="Enter the exact expected text here. After OCR runs, Word and Character Accuracy will be evaluated.")
+    st.subheader("🎯 Evaluation")
+    
+    # Automatic Ground Truth Lookup
+    auto_gt = ground_truth_lookup.get(uploaded_file.name, "")
+    if auto_gt:
+        st.success(f"✅ Found ground truth for `{uploaded_file.name}` in dataset.")
+    
+    if use_gemini_ref:
+        st.warning("🤖 **Reference Mode Active**: Gemini will be used as ground truth.")
+        ground_truth = "" # Will be filled during OCR run
+    else:
+        st.info("Enter the **Expected Text** below (or upload a file from `data/dummy` for auto-fill).")
+        ground_truth = st.text_area("Expected Text", value=auto_gt, help="Enter the exact expected text here. If left blank, accuracy won't be calculated unless Reference Mode is on.")
 
     if st.button("🚀 Perform OCR"):
         st.info(f"Running OCR with {model_choice}...")
         full_text = ""
+        ref_text = "" # For pseudo-ground truth
         
         # Decide which image to feed to OCR
         ocr_input = processed_gray if use_preprocessed else image_np
-        
-        # --- 1. Gemini Vision Path ---
+
+        # --- PRE-STEP: Gemini Reference ---
+        if use_gemini_ref:
+            if not gemini_api_key:
+                st.error("Please enter your Gemini API Key in the sidebar for Reference Mode.")
+            else:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=gemini_api_key)
+                    model_genai = genai.GenerativeModel('gemini-2.0-flash')
+                    
+                    if use_preprocessed:
+                        pil_input = Image.fromarray(cv2.cvtColor(processed_gray, cv2.COLOR_GRAY2RGB))
+                    else:
+                        pil_input = image
+                    
+                    with st.spinner("🤖 Gemini is generating reference transcription..."):
+                        response = model_genai.generate_content([
+                            pil_input,
+                            "SYSTEM: You are a verbatim OCR engine. Output only the literal text found in the image. No preamble."
+                        ])
+                        ref_text = response.text.strip()
+                        st.success("🤖 Reference transcription acquired!")
+                except Exception as e:
+                    st.error(f"Gemini Reference Error: {str(e)}")
+
+        # --- 1. Gemini Vision Path (Main) ---
         if model_choice == "Gemini Vision API (Best)":
             if not gemini_api_key:
                 st.error("Please enter your Gemini API Key in the sidebar.")
@@ -243,48 +315,119 @@ if uploaded_file is not None:
                 print(f"DEBUG: TrOCR Error detail: {e}")
 
         # --- 3. EasyOCR Path ---
-        elif model_choice == "EasyOCR (Lightweight)":
+        elif model_choice == "EasyOCR (Lightweight)" and not use_consensus:
             try:
                 import easyocr
                 with st.spinner("Initializing EasyOCR..."):
                     reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
                 
                 with st.spinner("EasyOCR is reading..."):
-                    # Use original paragraph groupings
-                    results = reader.readtext(
-                        ocr_input,
-                        paragraph=True,
-                        contrast_ths=0.1,
-                        adjust_contrast=0.7,
-                        width_ths=1.2
-                    )
-                    # Sort top-to-bottom
+                    results = reader.readtext(ocr_input, paragraph=True)
                     results = sorted(results, key=lambda r: r[0][0][1])
                     full_text = "\n".join([r[1] for r in results])
             except Exception as e:
                 st.error(f"EasyOCR Error: {str(e)}")
 
+        # --- 4. CONSENSUS MODE (TrOCR + EasyOCR) ---
+        if use_consensus:
+            st.info("🔄 Running Consensus Mode (TrOCR + EasyOCR)...")
+            
+            # --- Sub-step 1: TrOCR ---
+            try:
+                from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+                from PIL import Image as PILImage
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                
+                @st.cache_resource
+                def load_trocr_local(model_id):
+                    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+                    processor = TrOCRProcessor.from_pretrained(model_id, use_fast=False)
+                    model = VisionEncoderDecoderModel.from_pretrained(model_id, torch_dtype=dtype).to(device)
+                    return processor, model
+
+                proc, mod = load_trocr_local(trocr_model_id)
+                
+                def run_trocr(img):
+                    if len(img.shape) == 2: img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                    pil_img = PILImage.fromarray(img)
+                    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+                    pixel_values = proc(images=pil_img, return_tensors="pt").pixel_values.to(device, dtype=dtype)
+                    generated_ids = mod.generate(pixel_values, max_new_tokens=64)
+                    return proc.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+
+                with st.spinner("🔄 TrOCR is processing..."):
+                    if trocr_segmentation:
+                        lines = segment_lines(ocr_input)
+                        trocr_out = "\n".join([run_trocr(l) for l in (lines if lines else [ocr_input])])
+                    else:
+                        trocr_out = run_trocr(ocr_input)
+            except Exception as e:
+                st.error(f"TrOCR (Consensus) Error: {e}")
+                trocr_out = ""
+
+            # --- Sub-step 2: EasyOCR ---
+            try:
+                import easyocr
+                reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
+                with st.spinner("🔄 EasyOCR is processing..."):
+                    results = reader.readtext(ocr_input, paragraph=True)
+                    easy_out = "\n".join([r[1] for r in sorted(results, key=lambda r: r[0][0][1])])
+            except Exception as e:
+                st.error(f"EasyOCR (Consensus) Error: {e}")
+                easy_out = ""
+
+            # --- CONSENSUS FINAL ---
+            full_text = trocr_out if model_choice == "TrOCR (High-Accuracy Local)" else easy_out
+            ref_text = easy_out if model_choice == "TrOCR (High-Accuracy Local)" else trocr_out
+            
+            if trocr_out and easy_out:
+                st.success("✅ Both models finished. Calculating consistency...")
+            else:
+                st.warning("⚠️ One or more models failed to produce output. Accuracy may be unreliable.")
+
         # --- Results Display ---
         if full_text:
-            st.text_area("OCR Result (Verbatim)", full_text, height=450)
+            st.session_state["last_ocr"] = full_text
+            st.text_area("OCR Result", full_text, height=450)
             
-            # Compute Accuracies if Ground Truth is provided
-            if ground_truth.strip():
+            # Save Label Feature
+            if st.button("💾 Save as Ground Truth"):
+                user_label_data = {}
+                if os.path.exists(USER_LABELS_PATH):
+                    with open(USER_LABELS_PATH, "r") as f:
+                        user_label_data = json.load(f)
+                
+                user_label_data[uploaded_file.name] = full_text
+                with open(USER_LABELS_PATH, "w") as f:
+                    json.dump(user_label_data, f, indent=4)
+                st.success(f"Saved text for `{uploaded_file.name}`! It will auto-populate next time.")
+                st.rerun()
+
+            # Compute Accuracies
+            eval_target = ground_truth.strip() if ground_truth.strip() else ref_text.strip()
+            
+            if eval_target:
                 try:
                     from src.utils import compute_cer, compute_wer
-                    cer = compute_cer(full_text, ground_truth)
-                    wer = compute_wer(full_text, ground_truth)
+                    cer = compute_cer(full_text, eval_target)
+                    wer = compute_wer(full_text, eval_target)
                     
                     char_acc = max(0.0, 1.0 - cer) * 100
                     word_acc = max(0.0, 1.0 - wer) * 100
                     
-                    st.markdown("### Accuracy Metrics")
+                    label_prefix = "Consistency" if (use_consensus and not ground_truth.strip()) else "Accuracy"
+                    st.markdown(f"### {label_prefix} Metrics")
+                    if use_gemini_ref and not ground_truth.strip():
+                        st.caption("*(Calculated relative to Gemini's reference transcription)*")
+                    elif use_consensus and not ground_truth.strip():
+                        st.caption("*(Calculated by comparing TrOCR and EasyOCR)*")
+                    
                     col_m1, col_m2 = st.columns(2)
-                    col_m1.metric(label="Character Accuracy", value=f"{char_acc:.2f}%", help="Based on Character Error Rate (CER). How many characters are correctly transcribed.")
-                    col_m2.metric(label="Word Accuracy", value=f"{word_acc:.2f}%", help="Based on Word Error Rate (WER). How many full words are correctly transcribed.")
+                    col_m1.metric(label=f"{label_prefix} (Char)", value=f"{char_acc:.2f}%")
+                    col_m2.metric(label=f"{label_prefix} (Word)", value=f"{word_acc:.2f}%")
                     st.markdown("---")
                 except ImportError:
-                    st.warning("Could not calculate accuracy. Please ensure 'editdistance' is installed (`pip install editdistance`).")
+                    st.warning("Could not calculate accuracy. Please ensure 'editdistance' is installed.")
             
             st.download_button("Download Text", full_text, file_name="handwriting_transcription.txt")
         else:
