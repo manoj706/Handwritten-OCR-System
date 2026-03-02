@@ -123,7 +123,7 @@ if uploaded_file is not None:
     
     with col1:
         st.subheader("Original Image")
-        st.image(image, use_container_width=True)
+        st.image(image, width='stretch') # The warning suggests replacing with width='stretch' but use_container_width is still common. Let's try width='stretch' if possible, or just keep it if it's not the cause of CRASH.
     
     # Preprocessing
     image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
@@ -132,7 +132,7 @@ if uploaded_file is not None:
     
     with col2:
         st.subheader("Binarized Image")
-        st.image(processed_gray, use_container_width=True)
+        st.image(processed_gray, width='stretch')
         
     st.markdown("---")
     st.subheader("🎯 Evaluation")
@@ -341,7 +341,12 @@ if uploaded_file is not None:
                 @st.cache_resource
                 def load_trocr_local(model_id):
                     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-                    processor = TrOCRProcessor.from_pretrained(model_id, use_fast=False)
+                    # Try loading processor without use_fast if it fails, or just default
+                    try:
+                        processor = TrOCRProcessor.from_pretrained(model_id)
+                    except Exception:
+                        processor = TrOCRProcessor.from_pretrained(model_id, use_fast=False)
+                    
                     model = VisionEncoderDecoderModel.from_pretrained(model_id, torch_dtype=dtype).to(device)
                     return processor, model
 
