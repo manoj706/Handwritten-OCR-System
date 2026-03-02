@@ -4,7 +4,7 @@ torchaudio
 opencv-python
 numpy
 pandas
-streamlit
+streamlit>=1.35.0
 matplotlib
 scikit-learn
 Pillow
