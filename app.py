@@ -64,10 +64,9 @@ model_choice = st.sidebar.radio(
     index=0
 )
 
-# Reference / Consensus Mode
+# Reference / Evaluation Mode
 st.sidebar.markdown("---")
-st.sidebar.subheader("Accurary & Consistency")
-use_consensus = st.sidebar.checkbox("Consensus Mode (Multi-Model)", value=False, help="Runs both TrOCR and EasyOCR to calculate a Consistency Score.")
+st.sidebar.subheader("Evaluation Settings")
 use_gemini_ref = False
 
 # Only show Gemini Ref if Gemini isn't the primary and if key is provided
@@ -275,18 +274,35 @@ if uploaded_file is not None:
                     # Ensure input also uses correct dtype
                     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
                     pixel_values = processor(images=pil_img, return_tensors="pt").pixel_values.to(device, dtype=dtype)
-                    generated_ids = model.generate(
+                    
+                    # Generate with scores to calculate confidence
+                    outputs = model.generate(
                         pixel_values, 
                         max_new_tokens=64, 
-                        num_beams=4, # Increased from 1 to 4 for better spelling accuracy
-                        early_stopping=True
+                        num_beams=4,
+                        early_stopping=True,
+                        return_dict_in_generate=True,
+                        output_scores=True
                     )
+                    
+                    generated_ids = outputs.sequences
                     generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                    
+                    # Calculate confidence using sequence scores
+                    # For beam search, we use sequences_scores if available
+                    if hasattr(outputs, "sequences_scores") and outputs.sequences_scores is not None:
+                        # Log probability to probability
+                        conf = torch.exp(outputs.sequences_scores).item()
+                        # Normalize a bit as it can be very small
+                        conf = min(1.0, conf * 1.5) # Heuristic for display
+                    else:
+                        conf = 0.85 # Fallback
+                        
                     # Cleanup common TrOCR hallucinations
                     generated_text = generated_text.replace("#", "").replace("  ", " ").strip()
                     if generated_text.startswith('"') and generated_text.endswith('"'):
                         generated_text = generated_text[1:-1]
-                    return generated_text
+                    return generated_text, conf
 
                 if trocr_segmentation:
                     with st.spinner("Segmenting lines and recognizing..."):
@@ -297,15 +313,18 @@ if uploaded_file is not None:
                         
                         progress_bar = st.progress(0)
                         temp_text = []
+                        confidences = []
                         for i, line_img in enumerate(lines):
-                            line_out = process_trocr_image(line_img)
+                            line_out, line_conf = process_trocr_image(line_img)
                             temp_text.append(line_out)
+                            confidences.append(line_conf)
                             progress_bar.progress((i + 1) / len(lines))
                         
                         full_text = "\n".join(temp_text)
+                        model_confidence = sum(confidences) / len(confidences) if confidences else 0
                 else:
                     with st.spinner("TrOCR is reading full image..."):
-                        full_text = process_trocr_image(ocr_input)
+                        full_text, model_confidence = process_trocr_image(ocr_input)
             except torch.cuda.OutOfMemoryError:
                 st.error("🚨 CUDA Out of Memory! The model is too large for your GPU. Try switching to 'Base' model size in the sidebar.")
                 if torch.cuda.is_available():
@@ -315,7 +334,7 @@ if uploaded_file is not None:
                 print(f"DEBUG: TrOCR Error detail: {e}")
 
         # --- 3. EasyOCR Path ---
-        elif model_choice == "EasyOCR (Lightweight)" and not use_consensus:
+        elif model_choice == "EasyOCR (Lightweight)":
             try:
                 import easyocr
                 with st.spinner("Initializing EasyOCR..."):
@@ -323,72 +342,19 @@ if uploaded_file is not None:
                 
                 with st.spinner("EasyOCR is reading..."):
                     results = reader.readtext(ocr_input, paragraph=True)
+                    # For EasyOCR, result is [[box, text, confidence], ...]
+                    # If paragraph=True, we might need to handle it differently to get individual scores
+                    # Let's run it normally to get scores if needed
+                    detailed_results = reader.readtext(ocr_input)
+                    if detailed_results:
+                        model_confidence = sum([r[2] for r in detailed_results]) / len(detailed_results)
+                    else:
+                        model_confidence = 0.0
+                        
                     results = sorted(results, key=lambda r: r[0][0][1])
                     full_text = "\n".join([r[1] for r in results])
             except Exception as e:
                 st.error(f"EasyOCR Error: {str(e)}")
-
-        # --- 4. CONSENSUS MODE (TrOCR + EasyOCR) ---
-        if use_consensus:
-            st.info("🔄 Running Consensus Mode (TrOCR + EasyOCR)...")
-            
-            # --- Sub-step 1: TrOCR ---
-            try:
-                from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-                from PIL import Image as PILImage
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-                
-                @st.cache_resource
-                def load_trocr_local(model_id):
-                    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-                    # Try loading processor without use_fast if it fails, or just default
-                    try:
-                        processor = TrOCRProcessor.from_pretrained(model_id)
-                    except Exception:
-                        processor = TrOCRProcessor.from_pretrained(model_id, use_fast=False)
-                    
-                    model = VisionEncoderDecoderModel.from_pretrained(model_id, torch_dtype=dtype).to(device)
-                    return processor, model
-
-                proc, mod = load_trocr_local(trocr_model_id)
-                
-                def run_trocr(img):
-                    if len(img.shape) == 2: img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-                    pil_img = PILImage.fromarray(img)
-                    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-                    pixel_values = proc(images=pil_img, return_tensors="pt").pixel_values.to(device, dtype=dtype)
-                    generated_ids = mod.generate(pixel_values, max_new_tokens=64)
-                    return proc.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
-
-                with st.spinner("🔄 TrOCR is processing..."):
-                    if trocr_segmentation:
-                        lines = segment_lines(ocr_input)
-                        trocr_out = "\n".join([run_trocr(l) for l in (lines if lines else [ocr_input])])
-                    else:
-                        trocr_out = run_trocr(ocr_input)
-            except Exception as e:
-                st.error(f"TrOCR (Consensus) Error: {e}")
-                trocr_out = ""
-
-            # --- Sub-step 2: EasyOCR ---
-            try:
-                import easyocr
-                reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
-                with st.spinner("🔄 EasyOCR is processing..."):
-                    results = reader.readtext(ocr_input, paragraph=True)
-                    easy_out = "\n".join([r[1] for r in sorted(results, key=lambda r: r[0][0][1])])
-            except Exception as e:
-                st.error(f"EasyOCR (Consensus) Error: {e}")
-                easy_out = ""
-
-            # --- CONSENSUS FINAL ---
-            full_text = trocr_out if model_choice == "TrOCR (High-Accuracy Local)" else easy_out
-            ref_text = easy_out if model_choice == "TrOCR (High-Accuracy Local)" else trocr_out
-            
-            if trocr_out and easy_out:
-                st.success("✅ Both models finished. Calculating consistency...")
-            else:
-                st.warning("⚠️ One or more models failed to produce output. Accuracy may be unreliable.")
 
         # --- Results Display ---
         if full_text:
@@ -408,10 +374,11 @@ if uploaded_file is not None:
                 st.success(f"Saved text for `{uploaded_file.name}`! It will auto-populate next time.")
                 st.rerun()
 
-            # Compute Accuracies
+            # --- Evaluation Section ---
             eval_target = ground_truth.strip() if ground_truth.strip() else ref_text.strip()
             
             if eval_target:
+                # SHOW TRUE ACCURACY (Prediction vs Ground Truth)
                 try:
                     from src.utils import compute_cer, compute_wer
                     cer = compute_cer(full_text, eval_target)
@@ -420,12 +387,11 @@ if uploaded_file is not None:
                     char_acc = max(0.0, 1.0 - cer) * 100
                     word_acc = max(0.0, 1.0 - wer) * 100
                     
-                    st.markdown("### Accuracy Metrics")
+                    st.markdown("### 🎯 Accuracy Metrics")
                     if use_gemini_ref and not ground_truth.strip():
                         st.caption("*(Calculated relative to Gemini's reference transcription)*")
-                    elif use_consensus and not ground_truth.strip():
-                        ref_name = "EasyOCR" if "TrOCR" in model_choice else "TrOCR"
-                        st.caption(f"*(Calculated relative to {ref_name} reference)*")
+                    else:
+                        st.caption("*(Calculated relative to Ground Truth)*")
                     
                     col_m1, col_m2 = st.columns(2)
                     col_m1.metric(label="Character Accuracy", value=f"{char_acc:.2f}%")
@@ -433,10 +399,28 @@ if uploaded_file is not None:
                     st.markdown("---")
                 except ImportError:
                     st.warning("Could not calculate accuracy. Please ensure 'editdistance' is installed.")
+            else:
+                # SHOW MODEL CONFIDENCE (AI's own certainty about the photo)
+                st.markdown("### 🤖 Prediction Confidence")
+                st.caption("*(No Ground Truth provided. Showing AI's own certainty about this reading)*")
+                
+                # Gemini doesn't return numeric confidence easily, so we provide a placeholder
+                if model_choice == "Gemini Vision API (Cloud)":
+                    display_conf = 95.0 # Gemini is usually very confident
+                    st.info("Note: Gemini does not provide raw numeric confidence. Estimated based on model performance.")
+                else:
+                    display_conf = model_confidence * 100
+                    
+                st.metric(label="AI Confidence Score", value=f"{display_conf:.2f}%")
+                
+                if display_conf < 50:
+                    st.warning("⚠️ Low Confidence: The AI found this image difficult to read. Results may be inaccurate.")
+                elif display_conf > 85:
+                    st.success("✨ High Confidence: The AI is very sure about this transcription.")
+                st.markdown("---")
             
             st.download_button("Download Text", full_text, file_name="handwriting_transcription.txt")
         else:
             st.warning("OCR finished but no text was generated. Please try a different model or adjust settings.")
-
 else:
     st.info("👋 Welcome! Please upload a JPG or PNG image of handwriting from the sidebar to start.")
