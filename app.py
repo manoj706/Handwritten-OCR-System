@@ -420,16 +420,16 @@ if uploaded_file is not None:
                     char_acc = max(0.0, 1.0 - cer) * 100
                     word_acc = max(0.0, 1.0 - wer) * 100
                     
-                    label_prefix = "Consistency" if (use_consensus and not ground_truth.strip()) else "Accuracy"
-                    st.markdown(f"### {label_prefix} Metrics")
+                    st.markdown("### Accuracy Metrics")
                     if use_gemini_ref and not ground_truth.strip():
                         st.caption("*(Calculated relative to Gemini's reference transcription)*")
                     elif use_consensus and not ground_truth.strip():
-                        st.caption("*(Calculated by comparing TrOCR and EasyOCR)*")
+                        ref_name = "EasyOCR" if "TrOCR" in model_choice else "TrOCR"
+                        st.caption(f"*(Calculated relative to {ref_name} reference)*")
                     
                     col_m1, col_m2 = st.columns(2)
-                    col_m1.metric(label=f"{label_prefix} (Char)", value=f"{char_acc:.2f}%")
-                    col_m2.metric(label=f"{label_prefix} (Word)", value=f"{word_acc:.2f}%")
+                    col_m1.metric(label="Character Accuracy", value=f"{char_acc:.2f}%")
+                    col_m2.metric(label="Word Accuracy", value=f"{word_acc:.2f}%")
                     st.markdown("---")
                 except ImportError:
                     st.warning("Could not calculate accuracy. Please ensure 'editdistance' is installed.")
