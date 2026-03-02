@@ -174,15 +174,18 @@ if uploaded_file is not None:
                         raise MemoryError(f"Critically Low RAM: {available_ram_gb:.1f}GB. TrOCR requires at least 1.5GB to start safely.")
                     
                     print(f"DEBUG: Loading TrOCR Processor and Model ({model_id})...")
-                    processor = TrOCRProcessor.from_pretrained(model_id, local_files_only=True)
                     # Load in FP16 to save memory on 6GB GPUs
-                    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-                    model = VisionEncoderDecoderModel.from_pretrained(
-                        model_id, 
-                        torch_dtype=dtype,
-                        low_cpu_mem_usage=True,
-                        local_files_only=True
-                    ).to(device)
+                    try:
+                        # Update: Using use_fast=False for better compatibility in cloudy environments
+                        processor = TrOCRProcessor.from_pretrained(trocr_model_id, use_fast=False)
+                        model = VisionEncoderDecoderModel.from_pretrained(
+                            trocr_model_id, 
+                            torch_dtype=dtype,
+                            low_cpu_mem_usage=True
+                        ).to(device)
+                    except Exception as e:
+                        st.error(f"Failed to load TrOCR model. Ensure you have an internet connection or the model is cached. Error: {e}")
+                        st.stop() # Stop execution if model loading fails
                     return processor, model
 
                 with st.spinner(f"Loading TrOCR {trocr_size} Model (this may take a minute)..."):
