@@ -363,17 +363,23 @@ if uploaded_file is not None:
         if not ground_truth.strip() and not use_gemini_ref and model_choice != "Gemini Vision API (Cloud)":
             st.info("🔄 Running Auto-Reference to calculate Word/Character Accuracy...")
             
+            # Use original image for reference if binarized fails/is too harsh
+            ref_input = img_array # Always try original grayscale first for reference robustness
+            if len(ref_input.shape) == 3:
+                ref_input = cv2.cvtColor(ref_input, cv2.COLOR_RGB2GRAY)
+
             # Sub-step: Run the model NOT chosen as primary
             if model_choice == "TrOCR (High-Accuracy Local)":
-                # Run EasyOCR as reference
                 try:
                     import easyocr
                     reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
-                    detailed_results = reader.readtext(ocr_input)
-                    auto_ref_text = "\n".join([r[1] for r in sorted(detailed_results, key=lambda r: r[0][0][1])])
-                except: pass
+                    results = reader.readtext(ref_input)
+                    if not results: # Try preprocessed as fallback
+                        results = reader.readtext(ocr_input)
+                    auto_ref_text = " ".join([r[1] for r in sorted(results, key=lambda r: r[0][0][1])])
+                except Exception as e:
+                    print(f"Auto-Ref EasyOCR Error: {e}")
             else:
-                # Run TrOCR as reference
                 try:
                     from transformers import TrOCRProcessor, VisionEncoderDecoderModel
                     from PIL import Image as PILImage
@@ -399,12 +405,12 @@ if uploaded_file is not None:
                         generated_ids = ref_mod.generate(pixel_values, max_new_tokens=64)
                         return ref_proc.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
 
-                    if trocr_segmentation:
-                        lines = segment_lines(ocr_input)
-                        auto_ref_text = "\n".join([run_ref_trocr(l) for l in (lines if lines else [ocr_input])])
-                    else:
+                    # For auto-ref (speed), we use full image first
+                    auto_ref_text = run_ref_trocr(ref_input)
+                    if not auto_ref_text.strip():
                         auto_ref_text = run_ref_trocr(ocr_input)
-                except: pass
+                except Exception as e:
+                    print(f"Auto-Ref TrOCR Error: {e}")
 
         # --- Results Display ---
         if full_text:
@@ -448,6 +454,10 @@ if uploaded_file is not None:
                     
                     st.markdown("### 🎯 Accuracy Metrics")
                     st.caption(f"*(Calculated relative to {eval_source})*")
+                    
+                    with st.expander("Show Comparison Data"):
+                        st.text(f"Your Result: {full_text}")
+                        st.text(f"Reference:  {eval_target}")
                     
                     col_m1, col_m2 = st.columns(2)
                     col_m1.metric(label="Character Accuracy", value=f"{char_acc:.2f}%")
