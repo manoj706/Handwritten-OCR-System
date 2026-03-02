@@ -356,6 +356,56 @@ if uploaded_file is not None:
             except Exception as e:
                 st.error(f"EasyOCR Error: {str(e)}")
 
+        # --- 4. AUTO-REFERENCE LOGIC (Ensures Word/Char Accuracy) ---
+        # If no Ground Truth and not using Gemini, run the "other" model as reference
+        # This allows us to show Word/Char Accuracy relative to AI consensus
+        auto_ref_text = ""
+        if not ground_truth.strip() and not use_gemini_ref and model_choice != "Gemini Vision API (Cloud)":
+            st.info("🔄 Running Auto-Reference to calculate Word/Character Accuracy...")
+            
+            # Sub-step: Run the model NOT chosen as primary
+            if model_choice == "TrOCR (High-Accuracy Local)":
+                # Run EasyOCR as reference
+                try:
+                    import easyocr
+                    reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
+                    detailed_results = reader.readtext(ocr_input)
+                    auto_ref_text = "\n".join([r[1] for r in sorted(detailed_results, key=lambda r: r[0][0][1])])
+                except: pass
+            else:
+                # Run TrOCR as reference
+                try:
+                    from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+                    from PIL import Image as PILImage
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                    
+                    @st.cache_resource
+                    def load_ref_trocr(model_id):
+                        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+                        try:
+                            processor = TrOCRProcessor.from_pretrained(model_id)
+                        except:
+                            processor = TrOCRProcessor.from_pretrained(model_id, use_fast=False)
+                        model = VisionEncoderDecoderModel.from_pretrained(model_id, torch_dtype=dtype).to(device)
+                        return processor, model
+
+                    ref_proc, ref_mod = load_ref_trocr(trocr_model_id)
+                    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+                    
+                    def run_ref_trocr(img):
+                        if len(img.shape) == 2: img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                        pil_img = PILImage.fromarray(img)
+                        pixel_values = ref_proc(images=pil_img, return_tensors="pt").pixel_values.to(device, dtype=dtype)
+                        generated_ids = ref_mod.generate(pixel_values, max_new_tokens=64)
+                        return ref_proc.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+
+                    if trocr_segmentation:
+                        lines = segment_lines(ocr_input)
+                        auto_ref_text = "\n".join([run_ref_trocr(l) for l in (lines if lines else [ocr_input])])
+                    else:
+                        auto_ref_text = run_ref_trocr(ocr_input)
+                except: pass
+
         # --- Results Display ---
         if full_text:
             st.session_state["last_ocr"] = full_text
@@ -375,10 +425,19 @@ if uploaded_file is not None:
                 st.rerun()
 
             # --- Evaluation Section ---
-            eval_target = ground_truth.strip() if ground_truth.strip() else ref_text.strip()
+            # Prioritize: 1. Manual GT, 2. Gemini Ref, 3. Auto-Reference Local
+            eval_target = ground_truth.strip()
+            eval_source = "User Provided"
+            
+            if not eval_target:
+                if use_gemini_ref and ref_text:
+                    eval_target = ref_text
+                    eval_source = "Gemini Reference"
+                elif auto_ref_text:
+                    eval_target = auto_ref_text
+                    eval_source = "AI Reference (Cross-Model)"
             
             if eval_target:
-                # SHOW TRUE ACCURACY (Prediction vs Ground Truth)
                 try:
                     from src.utils import compute_cer, compute_wer
                     cer = compute_cer(full_text, eval_target)
@@ -388,10 +447,7 @@ if uploaded_file is not None:
                     word_acc = max(0.0, 1.0 - wer) * 100
                     
                     st.markdown("### 🎯 Accuracy Metrics")
-                    if use_gemini_ref and not ground_truth.strip():
-                        st.caption("*(Calculated relative to Gemini's reference transcription)*")
-                    else:
-                        st.caption("*(Calculated relative to Ground Truth)*")
+                    st.caption(f"*(Calculated relative to {eval_source})*")
                     
                     col_m1, col_m2 = st.columns(2)
                     col_m1.metric(label="Character Accuracy", value=f"{char_acc:.2f}%")
@@ -400,24 +456,7 @@ if uploaded_file is not None:
                 except ImportError:
                     st.warning("Could not calculate accuracy. Please ensure 'editdistance' is installed.")
             else:
-                # SHOW MODEL CONFIDENCE (AI's own certainty about the photo)
-                st.markdown("### 🤖 Prediction Confidence")
-                st.caption("*(No Ground Truth provided. Showing AI's own certainty about this reading)*")
-                
-                # Gemini doesn't return numeric confidence easily, so we provide a placeholder
-                if model_choice == "Gemini Vision API (Cloud)":
-                    display_conf = 95.0 # Gemini is usually very confident
-                    st.info("Note: Gemini does not provide raw numeric confidence. Estimated based on model performance.")
-                else:
-                    display_conf = model_confidence * 100
-                    
-                st.metric(label="AI Confidence Score", value=f"{display_conf:.2f}%")
-                
-                if display_conf < 50:
-                    st.warning("⚠️ Low Confidence: The AI found this image difficult to read. Results may be inaccurate.")
-                elif display_conf > 85:
-                    st.success("✨ High Confidence: The AI is very sure about this transcription.")
-                st.markdown("---")
+                st.warning("⚠️ No ground truth or reference model available to calculate accurate Word/Character metrics.")
             
             st.download_button("Download Text", full_text, file_name="handwriting_transcription.txt")
         else:
