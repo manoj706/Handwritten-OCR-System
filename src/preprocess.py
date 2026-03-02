@@ -51,27 +51,42 @@ def remove_borders(image: np.ndarray, margin: float = 0.05) -> np.ndarray:
     
     return image[y_start:y_end, x_start:x_end]
 
-def preprocess_image(image: np.ndarray, denoise_strength: int = 1) -> np.ndarray:
-    """Full preprocessing pipeline: Grayscale -> Denoise -> Threshold -> Skew Correction."""
-    # 0. Remove Borders (Scan artifacts)
-    # image = remove_borders(image, margin=0.08) # Remove 8% from left/right
-    # Let's do this on grayscale to save compute
-    
+def preprocess_image(image: np.ndarray, denoise_strength: int = 1, method: str = 'adaptive') -> np.ndarray:
+    """Full preprocessing pipeline: Grayscale -> Denoise -> Threshold."""
     # 1. Grayscale
     gray = grayscale(image)
     
-    # Border removal disabled — preserves full image
-    # gray = remove_borders(gray, margin=0.08)
-    
-    # 2. Denoise
-    # Multiple passes for stronger denoising if needed
+    # 2. Aggressive Denoise
+    # Median blur is highly effective against salt-and-pepper noise dots
+    gray = cv2.medianBlur(gray, 3)
     for _ in range(denoise_strength):
         gray = denoise(gray)
         
-    # 3. Threshold (binarize) — use adaptive for complex images with backgrounds
-    binary = threshold(gray, method='adaptive')
+    # 3. Threshold (binarize)
+    if method == 'clean':
+        # Combined approach: blur + otsu
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:
+        # Better adaptive parameters: block size 15, constant 10 to suppress more noise
+        binary = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 10
+        )
     
-    # 4. Skew Correction (optional, can be expensive or error prone on small text)
-    # corrected = correct_skew(binary) 
+    # 4. Post-threshold noise removal (Morphological opening)
+    # Increase kernel size for more aggression
+    kernel = np.ones((3, 3), np.uint8)
+    text_mask = cv2.bitwise_not(binary)
+    opened = cv2.morphologyEx(text_mask, cv2.MORPH_OPEN, kernel)
+    binary = cv2.bitwise_not(opened)
+    
+    # 5. Marginal Crop (remove top/bottom 3% to kill edge noise)
+    h, w = binary.shape
+    top_crop = int(h * 0.03)
+    bot_crop = int(h * 0.03)
+    # Make sure we don't crop everything
+    if top_crop + bot_crop < h * 0.5:
+        binary[0:top_crop, :] = 255 # Fill with white (background)
+        binary[h-bot_crop:h, :] = 255
     
     return binary

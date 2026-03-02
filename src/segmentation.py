@@ -49,11 +49,30 @@ def segment_lines(image: np.ndarray) -> List[np.ndarray]:
     
     lines = []
     for start, end in peaks:
+        height = end - start
+        
+        # 1. Stricter Minimum Height Filter: Skip segments < 20 pixels high
+        # Most handwriting lines are at least 30-50px. 20px safely catches noise.
+        if height < 20:
+            continue
+            
         # Extract line with some padding
         pad = 2
         y1 = max(0, start - pad)
         y2 = min(image.shape[0], end + pad)
-        lines.append(image[y1:y2, :])
+        line_img = image[y1:y2, :]
+        
+        # 2. Stricter Text Density Filter: Skip segments with very little "text" content
+        line_binary = binary_inv[y1:y2, :]
+        text_pixel_count = np.count_nonzero(line_binary)
+        total_pixels = line_binary.shape[0] * line_binary.shape[1]
+        density = text_pixel_count / total_pixels
+        
+        # If density < 0.5%, it's likely just scattered noise dots
+        if density < 0.005:
+            continue
+            
+        lines.append(line_img)
         
     return lines
 
