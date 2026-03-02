@@ -15,4 +15,5 @@ transformers
 sentencepiece
 easyocr
 google-generativeai
+altair<5
 
