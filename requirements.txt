@@ -17,4 +17,5 @@ easyocr
 google-generativeai
 altair<5
 psutil
+# End of dependencies
 

@@ -5,9 +5,12 @@ from PIL import Image
 import torch
 import os
 
-# Set Hugging Face cache to D: drive to avoid "No space left on device" error on C:
-os.environ["HF_HOME"] = r"D:\huggingface_cache"
-os.environ["TRANSFORMERS_CACHE"] = r"D:\huggingface_cache"
+# Set Hugging Face cache to D: drive only if it exists (local setup)
+# This prevents errors on Streamlit Cloud (Linux) where D: doesn't exist.
+CACHE_PATH = r"D:\huggingface_cache"
+if os.path.exists(CACHE_PATH):
+    os.environ["HF_HOME"] = CACHE_PATH
+    os.environ["TRANSFORMERS_CACHE"] = CACHE_PATH
 # Optimize CUDA memory allocation to prevent fragmentation OOM
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
