@@ -86,7 +86,7 @@ if model_choice == "Gemini Vision API (Cloud)" or use_gemini_ref:
     gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Required for Gemini main or reference mode.")
     st.sidebar.info("💡 Note: If you hit quota limits (429), use 'Consensus Mode' for local evaluation instead.")
 
-if "TrOCR" in model_choice or use_consensus:
+if "TrOCR" in model_choice:
     st.sidebar.markdown("### TrOCR Settings")
     import psutil
     available_ram_gb = psutil.virtual_memory().available / (1024**3)
@@ -364,7 +364,7 @@ if uploaded_file is not None:
             st.info("🔄 Running Auto-Reference to calculate Word/Character Accuracy...")
             
             # Use original image for reference if binarized fails/is too harsh
-            ref_input = img_array # Always try original grayscale first for reference robustness
+            ref_input = image_np # Always try original grayscale first for reference robustness
             if len(ref_input.shape) == 3:
                 ref_input = cv2.cvtColor(ref_input, cv2.COLOR_RGB2GRAY)
 
