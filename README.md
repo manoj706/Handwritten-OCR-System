@@ -3,7 +3,7 @@
 This project is a Handwritten OCR System that uses a CRNN (CNN + BiLSTM + CTC) architecture to recognize text from scanned handwritten documents.
 
 # App Link 
-https://pen2text.streamlit.app
+
 ## Features
 - **Image Preprocessing**: Grayscale conversion, denoising, thresholding, and skew correction.
 - **Deep Learning Model**: CRNN for sequence-to-sequence text recognition.
